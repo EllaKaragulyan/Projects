@@ -1,0 +1,392 @@
+---
+title: "Public Transportation Demand"
+author: "Ella Karagulyan"
+date: "2025-04-25"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(forecast)
+library(zoo)
+library(fpp2)
+library(ggplot2)
+library(lubridate) 
+library(patchwork)
+
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+```
+
+##Appendix
+ 
+```{r data}
+# Reading and exploring data 
+rd <- read.csv("publicTransport_part.csv")
+summary(rd)
+head(rd, 10)
+tail(rd,10)
+colSums(is.na(rd))
+table(rd$DATE)
+table(rd$TIME)
+```
+Next, we create a time-series object.
+ 
+```{r time series object}
+# Creating time-series object 
+rdts <- ts(rd$DEMAND, frequency = 63)
+head(rdts)
+
+plot(rdts, 
+     xlab = "",  
+     ylab = "Number of passengers", 
+     main = "Public transportation demand",
+     ylim = c(0, 150), 
+     bty = "l", 
+     col = "navy", 
+     lwd = 1,
+     xaxt = "n",
+     cex.axis = 0.6)
+axis(1,
+     at = time(rdts)[!duplicated(rd$DATE)],  
+     labels = unique(rd$DATE),               
+     las = 2,                                
+     cex.axis = 0.7)     
+```
+ Splitting into training and validation sets 
+ 
+```{r data split}
+
+# Defining intervals per day
+intervals_day <- 63
+
+# Training set - first 2 weeks
+train_period <- 14 * intervals_day
+
+# Validation set - 1 week
+valid_period <- 7 * intervals_day
+
+# Splitting into training and validation
+train_ts <- window(rdts, end = c(1, train_period))
+valid_ts <- window(rdts, start = c(1, train_period + 1))
+
+# Checking length
+length(train_ts)  
+length(valid_ts)
+```
+ 
+Decomposing the data 
+
+```{r decomposition}
+
+# Extracting individual components
+fit_rdts <- stl(rdts, s.window = "periodic")
+
+# Plotting the original time series and the decomposed components
+autoplot(fit_rdts) +
+  labs(title = "Public transportation demand") +  
+  theme_minimal() +  
+  theme(
+    panel.background = element_rect(fill = "white"),  
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank()  
+  )
+```
+
+Training models on training set (first 2 weeks) and testing on validation. 
+
+```{r modelling}
+
+# Aggregate data modelling 
+
+# STL + ETS(A,N,N) model
+
+# Fitting STL + ETS to seasonally adjusted training data
+fit_ets <- stlf(train_ts, s.window = "periodic")
+checkresiduals(fit_ets)
+
+# Forecasting validation set using STL + ETS
+fc_ets_mean <- fit_ets$mean
+
+# Forecasted values for training set (fitted values)
+fitted_ets_train <- fitted(fit_ets)
+
+# Metrics for training set (STL+ETS)
+mae_ets_train <- mean(abs(fitted_ets_train - train_ts))
+mape_ets_train <- mean(abs(fitted_ets_train - train_ts) / train_ts) * 100
+rmse_ets_train <- sqrt(mean((fitted_ets_train - train_ts)^2))
+
+# Metrics for validation set (STL+ETS)
+mae_ets_valid <- mean(abs(fc_ets_mean - valid_ts))
+mape_ets_valid <- mean(abs(fc_ets_mean - valid_ts) / valid_ts) * 100
+rmse_ets_valid <- sqrt(mean((fc_ets_mean - valid_ts)^2))
+
+# Seasonal ARIMA model
+
+# Fitting seasonal ARIMA to training data
+fit_arima <- auto.arima(train_ts, seasonal = TRUE)
+summary(fit_arima)
+checkresiduals(fit_arima)
+
+# Forecasting validation set using ARIMA
+fc_arima <- forecast(fit_arima, h = length(valid_ts))
+
+# Forecasted values for training set (fitted values)
+fitted_arima_train <- fitted(fit_arima)
+
+# Metrics for training set (ARIMA)
+mae_arima_train <- mean(abs(fitted_arima_train - train_ts))
+mape_arima_train <- mean(abs(fitted_arima_train - train_ts) / train_ts) * 100
+rmse_arima_train <- sqrt(mean((fitted_arima_train - train_ts)^2))
+
+# Metrics for validation set (ARIMA)
+mae_arima_valid <- mean(abs(fc_arima$mean - valid_ts))
+mape_arima_valid <- mean(abs(fc_arima$mean - valid_ts) / valid_ts) * 100
+rmse_arima_valid <- sqrt(mean((fc_arima$mean - valid_ts)^2))
+
+
+# Printing results 
+results <- data.frame(
+  Method = c("STL+ETS", "STL+ETS", "ARIMA", "ARIMA"),
+  Period = c("Training", "Validation", "Training", "Validation"),
+  MAE = c(mae_ets_train, mae_ets_valid, mae_arima_train, mae_arima_valid),
+  MAPE = c(mape_ets_train, mape_ets_valid, mape_arima_train, mape_arima_valid),
+  RMSE = c(rmse_ets_train, rmse_ets_valid, rmse_arima_train, rmse_arima_valid)
+)
+print(results)
+
+```
+
+Manual ARIMA to find a better fit 
+
+```{r manual arima}
+# ARIMA(1,1,1)(1,1,1)
+fit_arima_manual1 <- Arima(train_ts, order = c(1,1,1), seasonal = list(order = c(1,1,1)))
+fc_arima_manual1 <- forecast(fit_arima_manual1, h = length(valid_ts))
+
+mae_arima_manual1 <- mean(abs(fc_arima_manual1$mean - valid_ts))
+rmse_arima_manual1 <- sqrt(mean((fc_arima_manual1$mean - valid_ts)^2))
+print(c(Manual_ARIMA1_MAE = mae_arima_manual1, RMSE = rmse_arima_manual1))
+
+# ARIMA(2,1,2)(1,1,0)
+fit_arima_manual2 <- Arima(train_ts, order = c(2,1,2), seasonal = list(order = c(1,1,0)))
+fc_arima_manual2 <- forecast(fit_arima_manual2, h = length(valid_ts))
+
+mae_arima_manual2 <- mean(abs(fc_arima_manual2$mean - valid_ts))
+rmse_arima_manual2 <- sqrt(mean((fc_arima_manual2$mean - valid_ts)^2))
+print(c(Manual_ARIMA2_MAE = mae_arima_manual2, RMSE = rmse_arima_manual2))
+
+# ARIMA(1,1,2)(1,1,1)
+fit_arima_manual3 <- Arima(train_ts, order = c(1,1,2), seasonal = list(order = c(1,1,1)))
+fc_arima_manual3 <- forecast(fit_arima_manual3, h = length(valid_ts))
+
+mae_arima_manual3 <- mean(abs(fc_arima_manual3$mean - valid_ts))
+rmse_arima_manual3 <- sqrt(mean((fc_arima_manual3$mean - valid_ts)^2))
+print(c(Manual_ARIMA3_MAE = mae_arima_manual3, RMSE = rmse_arima_manual3))
+```
+
+ Training same models on weekdays only. 
+
+ 
+```{r weekday modelling}
+# Weekday-only modeling
+
+# Creating a datetime object
+rd$datetime <- as.POSIXct(paste(rd$DATE, rd$TIME), format = "%d-%b-%y %H:%M", tz = "UTC")
+
+# Identifying weekdays (Mon-Fri)
+weekday_flags <- weekdays(rd$datetime) %in% c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday")
+#weekday_flags
+
+# Filtering weekdays
+rd_weekdays <- rd[weekday_flags, ]
+
+# Creating weekday-only time series
+rdts_weekday <- ts(rd_weekdays$DEMAND, frequency = 63)
+#rdts_weekday
+
+# Splitting weekday data into training and validation
+n_train_weekday <- 10 * 63  
+train_ts_weekday <- window(rdts_weekday, end = c(1, n_train_weekday))
+valid_ts_weekday <- window(rdts_weekday, start = c(1, n_train_weekday + 1))
+
+# STL+ETS (Weekdays only)
+
+# Fitting STL+ETS on weekdays
+fit_ets_weekday <- stlf(train_ts_weekday, s.window = "periodic", h = length(valid_ts_weekday))
+fc_ets_mean_weekday <- fit_ets_weekday$mean
+
+# Forecasted values for training set (weekday STL+ETS)
+fitted_ets_train_weekday <- fitted(fit_ets_weekday)
+
+# Metrics for training set (weekday STL+ETS)
+mae_ets_train_weekday <- mean(abs(fitted_ets_train_weekday - train_ts_weekday))
+mape_ets_train_weekday <- mean(abs(fitted_ets_train_weekday - train_ts_weekday) / train_ts_weekday) * 100
+rmse_ets_train_weekday <- sqrt(mean((fitted_ets_train_weekday - train_ts_weekday)^2))
+
+# Metrics for validation set (weekday STL+ETS)
+mae_ets_valid_weekday <- mean(abs(fc_ets_mean_weekday - valid_ts_weekday))
+mape_ets_valid_weekday <- mean(abs(fc_ets_mean_weekday - valid_ts_weekday) / valid_ts_weekday) * 100
+rmse_ets_valid_weekday <- sqrt(mean((fc_ets_mean_weekday - valid_ts_weekday)^2))
+
+# ARIMA (Weekdays only)
+
+# Fitting ARIMA on weekdays
+fit_arima_weekday <- auto.arima(train_ts_weekday, seasonal = TRUE)
+summary(fit_arima_weekday)
+fc_arima_weekday <- forecast(fit_arima_weekday, h = length(valid_ts_weekday))
+
+# Forecasted values for training set (weekday ARIMA)
+fitted_arima_train_weekday <- fitted(fit_arima_weekday)
+
+# Metrics for training set (weekday ARIMA)
+mae_arima_train_weekday <- mean(abs(fitted_arima_train_weekday - train_ts_weekday))
+mape_arima_train_weekday <- mean(abs(fitted_arima_train_weekday - train_ts_weekday) / train_ts_weekday) * 100
+rmse_arima_train_weekday <- sqrt(mean((fitted_arima_train_weekday - train_ts_weekday)^2))
+
+# Metrics for validation set (weekday ARIMA)
+mae_arima_valid_weekday <- mean(abs(fc_arima_weekday$mean - valid_ts_weekday))
+mape_arima_valid_weekday <- mean(abs(fc_arima_weekday$mean - valid_ts_weekday) / valid_ts_weekday) * 100
+rmse_arima_valid_weekday <- sqrt(mean((fc_arima_weekday$mean - valid_ts_weekday)^2))
+
+# Print all results (Weekday models)
+
+results_weekday <- data.frame(
+  Method = c("STL+ETS (Weekday)", "STL+ETS (Weekday)", "ARIMA (Weekday)", "ARIMA (Weekday)"),
+  Period = c("Training", "Validation", "Training", "Validation"),
+  MAE = c(mae_ets_train_weekday, mae_ets_valid_weekday, mae_arima_train_weekday, mae_arima_valid_weekday),
+  MAPE = c(mape_ets_train_weekday, mape_ets_valid_weekday, mape_arima_train_weekday, mape_arima_valid_weekday),
+  RMSE = c(rmse_ets_train_weekday, rmse_ets_valid_weekday, rmse_arima_train_weekday, rmse_arima_valid_weekday)
+)
+print(results_weekday)
+```
+ 
+ Final model - STL+ETS model on weekdays 
+ 
+```{r final model}
+
+# Final STL+ETS model
+fit_final <- stlf(rdts_weekday, s.window = "periodic", h = 3 * 63)
+checkresiduals(fit_final)
+
+# Forecasting the future
+fc_final <- fit_final$mean
+
+# Setting negative forecasts to 0
+fc_final[fc_final < 0] <- 0  
+#fc_final
+
+# Creating final combined dataset
+final_series <- ts(c(rdts, fc_final), frequency = 63)
+summary(final_series)
+
+# Adding dates
+future_dates <- rep(c("22-Mar-05", "23-Mar-05", "24-Mar-05"), each = 63)
+full_dates <- c(rd$DATE, future_dates)
+#full_dates
+
+# Creating fitted values for training weekdays
+fitted_vals <- fitted(fit_final)
+#fitted_vals
+
+# Calculating in-sample errors on training data (weekday-only)
+
+# Actual values
+actual_weekdays <- rdts_weekday
+
+# Fitted values from final model
+fitted_weekdays <- fitted(fit_final)
+
+# Error metrics
+mae_final <- mean(abs(fitted_weekdays - actual_weekdays))
+mse_final <- mean((fitted_weekdays - actual_weekdays)^2)
+rmse_final <- sqrt(mse_final)
+
+# Print final in-sample error metrics
+print(c(Final_Model_MAE = mae_final, Final_Model_MSE = mse_final, Final_Model_RMSE = rmse_final))
+checkresiduals(fit_final)
+
+```
+
+Plotting the results 
+
+```{r plots}
+
+autoplot(fit_final) +
+  autolayer(fitted(fit_final), series = "Fitted Values") +
+  labs(
+    title = "Forecasted Public Transport Demand",
+    x = NULL,   # No label on x-axis
+    y = "Number of passengers",
+    color = "Series"  # Custom legend title
+  ) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_blank(),  # No numbers/dates on x-axis
+    axis.ticks.x = element_blank(), # No x-axis ticks
+    plot.title = element_text(hjust = 0.5),
+    legend.title = element_text(size = 9),
+    legend.text = element_text(size = 8)
+  )
+
+```
+```{r plot combined}
+
+# Historical timestamps
+historic_times <- as.POSIXct(paste(rd$DATE, rd$TIME), format = "%d-%b-%y %H:%M", tz = "UTC")
+
+# Future timestamps at 15-min intervals
+future_times <- seq.POSIXt(
+  from = as.POSIXct("2005-03-22 06:30", tz = "UTC"),
+  by = "15 min",
+  length.out = length(fc_final)
+)
+
+# Combine into one dataframe
+combined_data <- data.frame(
+  Timestamp = c(historic_times, future_times),
+  Value = c(as.numeric(rdts), as.numeric(fc_final)),
+  Type = c(rep("Historical", length(rdts)), rep("Forecast", length(fc_final)))
+)
+# Creating top (smaller) plot: fitted + forecast
+p1 <- autoplot(fit_final) +
+  autolayer(fitted(fit_final), series = "Fitted Values") +
+  labs(
+    title = "Public Transport Demand Forecast (weekdays)",
+    x = NULL,
+    y = "Number of passengers",
+    color = "Series"
+  ) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    plot.title = element_text(hjust = 0.5),
+    legend.title = element_text(size = 9),
+    legend.text = element_text(size = 8)
+  )
+
+# Creating bottom (larger) plot: full historical + forecast
+p2 <- ggplot(combined_data, aes(x = Timestamp, y = Value, color = Type)) +
+  geom_line(size = 0.6) +
+  scale_color_manual(values = c("Historical" = "navy", "Forecast" = "red")) +
+  scale_x_datetime(date_breaks = "1 day", date_labels = "%d-%b") +
+  labs(
+    title = "Public Transportation Demand: Historical and Forecasted",
+    x = "Date",
+    y = "Number of passengers"
+  ) +
+  theme_classic() +
+  theme(
+    legend.title = element_blank(),
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 7),
+    plot.title = element_text(hjust = 0.5)
+  )
+
+# Combining plots with different heights: bottom plot 2x bigger
+p1 / p2 + plot_layout(heights = c(2, 3))
+
+
+```
+ 
+ 
